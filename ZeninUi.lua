@@ -1,5 +1,3 @@
--- Luau caps a function at 200 locals, and an executor compiling at -O0 counts every one of them, so
--- keep file-scope locals well below that: section-only helpers live in do-blocks.
 local Library = {
 	Flags = {},
 	Options = {},
