@@ -1,3 +1,5 @@
+-- Luau caps a function at 200 locals, and an executor compiling at -O0 counts every one of them, so
+-- keep file-scope locals well below that: section-only helpers live in do-blocks.
 local Library = {
 	Flags = {},
 	Options = {},
@@ -8,7 +10,7 @@ local Library = {
 	ConfigFolder = nil,
 	GuiName = "ZeninUI",
 	ActiveWindow = nil,
-
+	-- Default for logos that don't set Tint: true repaints image logos in the accent colour too.
 	LogoTint = true,
 }
 
@@ -849,8 +851,9 @@ local NormalizeLogo, CreateLogo
 do
 	-- slot = {default px, default text size, max px}
 	local LOGO_SLOTS = {
-		Header = {12, 15, 30}, Key = {12, 15, 30},
-		Watermark = {10, 12, 22}, Panel = {10, 12, 22},
+		-- The window header and the watermark grow to fit large logos (see W.FitHeader / WM.FitLogo).
+		Header = {12, 15, 96}, Key = {12, 15, 30},
+		Watermark = {10, 12, 64}, Panel = {10, 12, 22},
 	}
 
 	local function SlotValue(v, slot, def, base)
@@ -5745,7 +5748,7 @@ local function BuildWatermark(W, cfg)
 	WM.Frame = frame
 	W.Paint(frame, "BackgroundColor3", "WmBg")
 	table.insert(WM.Fade, {frame, "BackgroundTransparency", 0.1})
-	Corner(frame, 13)
+	WM.Corner = Corner(frame, 13)
 	local stroke = Stroke(frame, WHITE, 1, 0.15)
 	W.Paint(stroke, "Color", "WmStroke")
 	table.insert(WM.Fade, {stroke, "Transparency", 0.15})
@@ -5794,6 +5797,10 @@ local function BuildWatermark(W, cfg)
 		local box, fades = CreateLogo(W, frame, W.LogoSpec, "Watermark")
 		box.LayoutOrder = WM.LogoOrder
 		WM.LogoFrame, WM.LogoFade = box, fades
+		-- Taller pill for big logos.
+		local h = math.max(26, math.ceil(box.Size.Y.Offset) + 8)
+		frame.Size = UDim2.new(0, 0, 0, h)
+		WM.Corner.CornerRadius = UDim.new(0, math.floor(h / 2))
 		WM.ApplyOpacity()
 	end
 
@@ -6065,6 +6072,9 @@ local function Notify(W, o)
 end
 
 local function BuildShell(W)
+	-- Every window starts with the default header; W.FitHeader grows it for big logos.
+	HEADER_H = 36
+	WIN_H = BODY_H + BOTTOM_H + HEADER_H
 	local Holder = Create("Frame", {
 		Name = "Window",
 		Size = UDim2.fromOffset(WIN_W, WIN_H),
@@ -6090,6 +6100,7 @@ local function BuildShell(W)
 	})
 	Corner(Header, 6)
 	W.Paint(Header, "BackgroundColor3", "BarBg")
+	W.HeaderH = HEADER_H
 	local HeaderFill = Create("Frame", {
 		Size = UDim2.new(1, 0, 0, HEADER_H / 2),
 		Position = UDim2.new(0, 0, 0, HEADER_H / 2),
@@ -6122,10 +6133,28 @@ local function BuildShell(W)
 	W.TitleLabel = Label(brand, W.Title, {AutoX = true, Size = UDim2.new(0, 0, 1, 0), Weight = "SemiBold"})
 	W.TitleLabel.LayoutOrder = 2
 	W.Paint(W.TitleLabel, "TextColor3", "Text")
+	-- Grows (or shrinks back) the header so a large logo fits; the body keeps its height and the
+	-- window gets taller instead.
+	function W.FitHeader()
+		local logoH = W.HeaderLogo and W.HeaderLogo.Size.Y.Offset or 0
+		local h = math.max(36, math.ceil(logoH) + 10)
+		if h == W.HeaderH then return end
+		W.HeaderH = h
+		HEADER_H = h
+		WIN_H = BODY_H + BOTTOM_H + h
+		W.Holder.Size = UDim2.fromOffset(WIN_W, WIN_H)
+		Header.Size = UDim2.new(1, 0, 0, h)
+		HeaderFill.Size = UDim2.new(1, 0, 0, h / 2)
+		HeaderFill.Position = UDim2.new(0, 0, 0, h / 2)
+		if W.BottomFade then W.BottomFade.Position = UDim2.fromOffset(0, h + BODY_H - 41) end
+		if W.PageClip then W.PageClip.Position = UDim2.fromOffset(0, h) end
+		if W.LayoutHeader then W.LayoutHeader() end
+	end
 	function W.BuildHeaderLogo()
 		if W.HeaderLogo then W.HeaderLogo:Destroy() end
 		W.HeaderLogo = CreateLogo(W, brand, W.LogoSpec, "Header")
 		W.HeaderLogo.LayoutOrder = 1
+		W.FitHeader()
 	end
 	W.BuildHeaderLogo()
 
@@ -6177,7 +6206,7 @@ local function BuildShell(W)
 
 	local BottomFade = Create("Frame", {
 		Size = UDim2.new(1, 0, 0, 41),
-		Position = UDim2.fromOffset(0, HEADER_H + BODY_H - 41),
+		Position = UDim2.fromOffset(0, W.HeaderH + BODY_H - 41),
 		BorderSizePixel = 0,
 		ZIndex = 6,
 		Parent = Main,
@@ -6194,6 +6223,7 @@ local function BuildShell(W)
 		Parent = BottomFade,
 	})
 	BottomFade.BackgroundTransparency = 1
+	W.BottomFade = BottomFade
 	local fadeOn = false
 	function W.SetFade(on)
 		if on == fadeOn then return end
@@ -6204,7 +6234,7 @@ local function BuildShell(W)
 	-- Pages slide inside this, so transitions never draw outside the window body.
 	W.PageClip = Create("Frame", {
 		Size = UDim2.new(1, 0, 0, BODY_H),
-		Position = UDim2.fromOffset(0, HEADER_H),
+		Position = UDim2.fromOffset(0, W.HeaderH),
 		BackgroundTransparency = 1,
 		ClipsDescendants = true,
 		ZIndex = 2,
@@ -6239,16 +6269,18 @@ end
 local function BuildNavigation(W)
 	function W.LayoutHeader()
 		local x = W.SetBtn.Position.X.Offset
+		local dy = ((W.HeaderH or HEADER_H) - 36) / 2
+		W.SetBtn.Position = UDim2.fromOffset(x, 4.5 + dy)
 		if W.CfgBtn then
 			x = x - 30.5
-			W.CfgBtn.Position = UDim2.fromOffset(x, 4.5)
+			W.CfgBtn.Position = UDim2.fromOffset(x, 4.5 + dy)
 		end
 		for _, b in ipairs(W.HeaderButtons) do
 			x = x - 30.5
-			b.Position = UDim2.fromOffset(x, 6)
+			b.Position = UDim2.fromOffset(x, 6 + dy)
 		end
 		local divX = x - 5
-		W.HeaderDivider.Position = UDim2.fromOffset(divX, 10.5)
+		W.HeaderDivider.Position = UDim2.fromOffset(divX, 10.5 + dy)
 		W.SubHolder.Position = UDim2.new(0, divX - 14, 0.5, 0)
 	end
 	W.LayoutHeader()
@@ -7758,9 +7790,9 @@ function RunKeySystem(ks, ctx)
 	Corner(main, 6)
 	Stroke(main, T.BoxBorder, 1)
 
-	local header = Create("Frame", {Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = T.BarBg, BorderSizePixel = 0, Parent = main})
+	local header = Create("Frame", {Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = T.BarBg, BorderSizePixel = 0, Parent = main})
 	Corner(header, 6)
-	Create("Frame", {Size = UDim2.new(1, 0, 0, HEADER_H / 2), Position = UDim2.fromOffset(0, HEADER_H / 2), BackgroundColor3 = T.BarBg, BorderSizePixel = 0, Parent = header})
+	Create("Frame", {Size = UDim2.new(1, 0, 0, 36 / 2), Position = UDim2.fromOffset(0, 36 / 2), BackgroundColor3 = T.BarBg, BorderSizePixel = 0, Parent = header})
 	AccentWash(header, 6, 0.07)(K.Accent, K.AccentAlpha)
 	Create("Frame", {Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1), BackgroundColor3 = T.BarLine, BorderSizePixel = 0, Parent = header})
 
@@ -7797,7 +7829,7 @@ function RunKeySystem(ks, ctx)
 	closeBtn.MouseLeave:Connect(function() Anim(closeIc, {ImageColor3 = T.NavGray, Rotation = 0}, true, MOVE_TI) end)
 	if ks.CanClose == false then sub.Size = UDim2.new(1, -12, 1, 0) end
 
-	local body = Create("Frame", {Size = UDim2.new(1, -24, 1, -HEADER_H - 12), Position = UDim2.fromOffset(12, HEADER_H + 10), BackgroundTransparency = 1, Parent = main})
+	local body = Create("Frame", {Size = UDim2.new(1, -24, 1, -36 - 12), Position = UDim2.fromOffset(12, 36 + 10), BackgroundTransparency = 1, Parent = main})
 	Label(body, Txt("Note", ks.Note or ks.Description), {Size = UDim2.new(1, 0, 0, 14), Color = T.TextGray, Truncate = true})
 
 	local boxFrame = Create("Frame", {Size = UDim2.new(1, 0, 0, 27), Position = UDim2.fromOffset(0, 22), BackgroundColor3 = T.DropdownBg, BorderSizePixel = 0, Parent = body})
